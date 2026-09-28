@@ -247,7 +247,7 @@ function ChannelModal({
 
   async function persist() {
     const rawContent: ContentItem[] = content.map((c) => {
-      const m = c.match(/^\{(collection|movie|show):\s*(.+)\}$/);
+      const m = c.match(/^\{(collection|movie|show|music|music_video|other_video):\s*(.+)\}$/);
       return m ? ({ [m[1]]: m[2].trim() } as ContentItem) : c;
     });
     if (matchRef) {
@@ -367,7 +367,7 @@ function ChannelModal({
 
         <Group gap="xs">
           <TextInput
-            placeholder="Add title, {movie: Title}, {show: Title} or {collection: Name}"
+            placeholder="Add title or {movie: …}, {show: …}, {music: …}, {music_video: …}, {other_video: …}"
             value={newItem}
             onChange={(e) => setNewItem(e.currentTarget.value)}
             onKeyDown={(e) => e.key === 'Enter' && addItem()}

@@ -165,6 +165,7 @@ def _tunarr_tags(obj, key):
 def tunarr_movie_to_row(prog, source_name):
     return {
         "Title":   prog.get("title", ""),
+        "Reference": prog.get("title", ""),
         "Year":    prog.get("year", ""),
         "Type":    "Movie",
         "Rating":  prog.get("rating", ""),
@@ -174,6 +175,7 @@ def tunarr_movie_to_row(prog, source_name):
         "Actors":  "|".join(a.get("name", "") for a in prog.get("actors", [])[:LEAD_CAST] if a.get("name")),
         "Seasons": "", "Episodes": "",
         "Country": "", "Mood": "", "Style": "",
+        "Artist": "", "Album": "",
         "Source":  source_name,
     }
 
@@ -186,6 +188,7 @@ def tunarr_show_to_row(show_title, episodes, source_name):
     meta = show if show.get("genres") or show.get("studios") else first
     return {
         "Title":   show_title,
+        "Reference": show_title,
         "Year":    show.get("year", ""),
         "Type":    "TV",
         "Rating":  first.get("rating", ""),
@@ -196,30 +199,68 @@ def tunarr_show_to_row(show_title, episodes, source_name):
         "Seasons": str(seasons) if seasons else "",
         "Episodes": str(len(episodes)),
         "Country": "", "Mood": "", "Style": "",
+        "Artist": "", "Album": "",
         "Source":  source_name,
     }
 
 
+def _entity_name(value):
+    if isinstance(value, dict):
+        return value.get("title") or value.get("name") or ""
+    return value or ""
+
+
+def tunarr_media_to_row(prog, source_name, kind):
+    """CSV row for Tunarr terminal media (tracks/music videos/other videos)."""
+    type_label = channel_engine.EXTRA_KIND_LABELS[kind]
+    artist = (prog.get("artistName") or _entity_name(prog.get("artist"))).strip()
+    album = (prog.get("albumName") or _entity_name(prog.get("album"))).strip()
+    return {
+        "Title": prog.get("title", ""),
+        "Reference": channel_engine.extra_program_reference(prog),
+        "Year": prog.get("year", ""),
+        "Type": type_label,
+        "Rating": prog.get("rating", ""),
+        "Genres": _tunarr_tags(prog, "genres"),
+        "Director": _tunarr_tags(prog, "directors"),
+        "Studio": _tunarr_tags(prog, "studios"),
+        "Actors": "",
+        "Seasons": "", "Episodes": "",
+        "Country": "", "Mood": "", "Style": "",
+        "Artist": artist, "Album": album,
+        "Source": source_name,
+    }
+
+
 def build_extra_rows_from_tunarr(tunarr_url, seen_movie_titles, seen_show_titles,
-                                  allowed_movie_libs=None, allowed_tv_libs=None):
+                                  allowed_movie_libs=None, allowed_tv_libs=None,
+                                  allowed_extra_libs=None):
     """Fetch content from all Tunarr sources, skipping titles already in the primary export.
 
-    allowed_movie_libs / allowed_tv_libs: set of Tunarr library UUIDs to include.
+    allowed_movie_libs / allowed_tv_libs / allowed_extra_libs: sets of Tunarr
+    library UUIDs to include.
     None = include all (CLI default). Empty set = skip entirely.
     """
     print("  Fetching additional content from other Tunarr sources...")
     sources = tunarr_get(tunarr_url, "/api/media-sources") or []
     if not sources:
-        return [], []
+        return [], [], []
 
     extra_movie_rows = []
     extra_show_rows  = []
+    extra_media_rows = []
+    seen_extra = set()
 
     for source in sources:
         source_name = source.get("name", source.get("type", "Tunarr"))
         libs = source.get("libraries", [])
         movie_libs = [l for l in libs if l.get("mediaType") in ("movie", "movies") and l.get("enabled")]
         show_libs  = [l for l in libs if l.get("mediaType") == "shows" and l.get("enabled")]
+        media_libs = [
+            (l, channel_engine.EXTRA_LIBRARY_KINDS.get((l.get("mediaType") or "").lower()))
+            for l in libs if l.get("enabled")
+        ]
+        media_libs = [(l, kind) for l, kind in media_libs if kind]
 
         for lib in movie_libs:
             if allowed_movie_libs is not None and lib["id"] not in allowed_movie_libs:
@@ -251,14 +292,34 @@ def build_extra_rows_from_tunarr(tunarr_url, seen_movie_titles, seen_show_titles
                 seen_show_titles.add(key)
                 extra_show_rows.append(tunarr_show_to_row(s["title"], s["episodes"], s["source"]))
 
+        for lib, library_kind in media_libs:
+            if allowed_extra_libs is not None and lib["id"] not in allowed_extra_libs:
+                continue
+            programs = tunarr_get(tunarr_url, f"/api/media-libraries/{lib['id']}/programs", timeout=120) or []
+            for p in programs:
+                prog = p.get("program", {})
+                kind = channel_engine.EXTRA_PROGRAM_KINDS.get(prog.get("type")) or library_kind
+                title = (prog.get("title") or "").strip()
+                if not title or kind not in channel_engine.EXTRA_KIND_LABELS:
+                    continue
+                artist = (prog.get("artistName") or _entity_name(prog.get("artist"))).strip()
+                album = (prog.get("albumName") or _entity_name(prog.get("album"))).strip()
+                dedupe_key = (kind, title.lower(), artist.lower(), album.lower())
+                if dedupe_key in seen_extra:
+                    continue
+                seen_extra.add(dedupe_key)
+                extra_media_rows.append(tunarr_media_to_row(prog, source_name, kind))
+
     new_movies = len(extra_movie_rows)
     new_shows  = len(extra_show_rows)
-    if new_movies or new_shows:
-        print(f"  Found {new_movies} additional movies, {new_shows} additional TV shows from Tunarr")
+    new_media = len(extra_media_rows)
+    if new_movies or new_shows or new_media:
+        print(f"  Found {new_movies} additional movies, {new_shows} additional TV shows, "
+              f"and {new_media} music/other items from Tunarr")
     else:
         print("  No additional content (primary Plex covers everything)")
 
-    return extra_movie_rows, extra_show_rows
+    return extra_movie_rows, extra_show_rows, extra_media_rows
 
 
 # ── Row builders ───────────────────────────────────────────────────────────────
@@ -286,6 +347,7 @@ def _join_tags(item, tag_name):
 def movie_to_row(item):
     return {
         "Title": item.get("title", ""),
+        "Reference": item.get("title", ""),
         "Year": item.get("year", ""),
         "Type": "Movie",
         "Rating": item.get("contentRating", ""),
@@ -298,12 +360,14 @@ def movie_to_row(item):
         "Country": _join_tags(item, "Country"),
         "Mood": _join_tags(item, "Mood"),
         "Style": _join_tags(item, "Style"),
+        "Artist": "", "Album": "",
     }
 
 
 def show_to_row(item):
     return {
         "Title": item.get("title", ""),
+        "Reference": item.get("title", ""),
         "Year": item.get("year", ""),
         "Type": "TV",
         "Rating": item.get("contentRating", ""),
@@ -316,6 +380,7 @@ def show_to_row(item):
         "Country": _join_tags(item, "Country"),
         "Mood": _join_tags(item, "Mood"),
         "Style": _join_tags(item, "Style"),
+        "Artist": "", "Album": "",
     }
 
 
@@ -333,6 +398,8 @@ def main():
                         help="Comma-separated Tunarr library UUIDs for extra movie sources (auto = all, empty = skip).")
     parser.add_argument("--tunarr-tv-libs", default=None,
                         help="Comma-separated Tunarr library UUIDs for extra TV sources (auto = all, empty = skip).")
+    parser.add_argument("--tunarr-extra-libs", default=None,
+                        help="Comma-separated Tunarr Music, Music Video, or Other Video library UUIDs (auto = all, empty = skip).")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -395,10 +462,6 @@ def main():
                     item["_source_name"] = srv_name if multi else ""
                     plex_shows.append(item)
 
-    if not plex_movies and not plex_shows:
-        print("ERROR: No content fetched from any Plex server")
-        sys.exit(1)
-
     # ── Supplement from other Tunarr sources ───────────────────────────────────
     # Pull content that Tunarr knows about but isn't in the primary Plex export.
     # allowed_*_libs: None = all (auto/CLI), set = user-selected, empty set = skip.
@@ -410,12 +473,18 @@ def main():
 
     allowed_movie_libs = _parse_lib_ids(args.tunarr_movie_libs)
     allowed_tv_libs    = _parse_lib_ids(args.tunarr_tv_libs)
+    allowed_extra_libs = _parse_lib_ids(args.tunarr_extra_libs)
 
-    extra_movie_rows, extra_show_rows = build_extra_rows_from_tunarr(
+    extra_movie_rows, extra_show_rows, extra_media_rows = build_extra_rows_from_tunarr(
         tunarr_url, seen_movie_titles, seen_show_titles,
         allowed_movie_libs=allowed_movie_libs,
         allowed_tv_libs=allowed_tv_libs,
+        allowed_extra_libs=allowed_extra_libs,
     )
+
+    if not plex_movies and not plex_shows and not extra_movie_rows and not extra_show_rows and not extra_media_rows:
+        print("ERROR: No content fetched from the selected Plex or Tunarr libraries")
+        sys.exit(1)
 
     # ── Cross-reference with Tunarr ────────────────────────────────────────────
     tunarr_movies = None
@@ -454,10 +523,11 @@ def main():
     # Append content from other Tunarr sources (already crossref'd — they came from Tunarr).
     rows.extend(extra_movie_rows)
     rows.extend(extra_show_rows)
+    rows.extend(extra_media_rows)
 
     # ── Write CSV ──────────────────────────────────────────────────────────────
-    fieldnames = ["Title", "Year", "Type", "Rating", "Genres", "Director", "Studio", "Actors", "Seasons", "Episodes",
-                  "Country", "Mood", "Style", "Source"]
+    fieldnames = ["Title", "Reference", "Year", "Type", "Rating", "Genres", "Director", "Studio", "Actors", "Seasons", "Episodes",
+                  "Country", "Mood", "Style", "Artist", "Album", "Source"]
     with open(args.out, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -466,8 +536,13 @@ def main():
     # ── Summary ────────────────────────────────────────────────────────────────
     movies_written = sum(1 for r in rows if r["Type"] == "Movie")
     shows_written = sum(1 for r in rows if r["Type"] == "TV")
+    music_written = sum(1 for r in rows if r["Type"] == "Music")
+    music_videos_written = sum(1 for r in rows if r["Type"] == "Music Video")
+    other_videos_written = sum(1 for r in rows if r["Type"] == "Other Video")
 
-    print(f"\n  Exported {movies_written} movies, {shows_written} TV shows -> {args.out}")
+    print(f"\n  Exported {movies_written} movies, {shows_written} TV shows, "
+          f"{music_written} tracks, {music_videos_written} music videos, and "
+          f"{other_videos_written} other videos -> {args.out}")
 
     if skipped_movies:
         print(f"\n  Skipped {len(skipped_movies)} movies not in Tunarr (not synced):")
@@ -487,6 +562,9 @@ def main():
         json.dump({
             "movies": movies_written,
             "tv_shows": shows_written,
+            "music": music_written,
+            "music_videos": music_videos_written,
+            "other_videos": other_videos_written,
             "skipped_movies": len(skipped_movies),
             "skipped_shows": len(skipped_shows),
         }, f)

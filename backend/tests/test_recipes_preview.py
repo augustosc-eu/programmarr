@@ -19,7 +19,7 @@ def test_preview_franchise_mode(tmp_path, monkeypatch):
     movie_map = {"die hard": {"id": "p1", "program": {
         "title": "Die Hard", "releaseDate": 1, "year": 1988}}}
     monkeypatch.setattr(channel_engine, "build_library_index",
-                        lambda url: (movie_map, {}))
+                        lambda url: (movie_map, {}, {}))
 
     res = recipes_router.preview_recipe(recipes_router.PreviewRequest(
         value="Die Hard Collection", match="franchise"))
@@ -34,6 +34,6 @@ def test_preview_title_contains_unchanged(tmp_path, monkeypatch):
     movie_map = {"die hard": {"id": "p1", "program": {
         "title": "Die Hard", "releaseDate": 1, "year": 1988}}}
     monkeypatch.setattr(channel_engine, "build_library_index",
-                        lambda url: (movie_map, {}))
+                        lambda url: (movie_map, {}, {}))
     res = recipes_router.preview_recipe(recipes_router.PreviewRequest(value="Die Hard"))
     assert res["count"] == 1

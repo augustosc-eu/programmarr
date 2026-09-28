@@ -112,7 +112,7 @@ def _program_ids(resolved: list) -> set:
     return {p["id"] for item in resolved for p in item["programs"]}
 
 
-def _id_label_map(movie_map: dict, show_map: dict) -> dict:
+def _id_label_map(movie_map: dict, show_map: dict, extra_maps: dict | None = None) -> dict:
     """Map each program id -> a human label (movie title, or show title for episodes)."""
     labels: dict = {}
     for p in movie_map.values():
@@ -120,6 +120,9 @@ def _id_label_map(movie_map: dict, show_map: dict) -> dict:
     for s in show_map.values():
         for p in s.get("programs", []):
             labels[p["id"]] = s["title"]
+    for title_map in (extra_maps or {}).values():
+        for p in title_map.values():
+            labels[p["id"]] = p.get("program", {}).get("title", "(media)")
     return labels
 
 
@@ -167,12 +170,12 @@ def _run_cycle_blocking(apply: bool, only: int = None) -> dict:
         return summary
 
     try:
-        movie_map, show_map = channel_engine.build_library_index(tunarr_url)
+        movie_map, show_map, extra_maps = channel_engine.build_library_index(tunarr_url)
     except channel_engine.ChannelEngineError as e:
         summary["error"] = f"library index failed: {e}"
         return summary
 
-    id_label = _id_label_map(movie_map, show_map)
+    id_label = _id_label_map(movie_map, show_map, extra_maps)
 
     # Plex section lookup only if a live channel uses collection refs
     plex_sections, collection_cache = [], {}
@@ -195,6 +198,7 @@ def _run_cycle_blocking(apply: bool, only: int = None) -> dict:
             plex_url=plex_url, plex_token=plex_token,
             plex_sections=plex_sections, collection_cache=collection_cache,
             franchise_index=franchise_index,
+            extra_maps=extra_maps,
         )
         fresh_ids = _program_ids(resolved)
 

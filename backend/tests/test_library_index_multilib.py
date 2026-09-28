@@ -50,9 +50,9 @@ def two_shows_libs(monkeypatch):
                 _prog("Phantom S1E2 real", show="Phantom"),
                 _prog("Phantom S1E3 real", show="Phantom")],
     }
-    monkeypatch.setattr(channel_engine, "get_plex_sources", lambda url: [source])
-
     def fake_api(url, method, path, body=None, timeout=60):
+        if path == "/api/media-sources":
+            return [{"type": "plex", "name": "Plex", **source}]
         for lib_id, items in progs.items():
             if path.endswith(f"/{lib_id}/programs"):
                 return items
@@ -62,14 +62,14 @@ def two_shows_libs(monkeypatch):
 
 
 def test_indexes_shows_from_all_shows_libraries(two_shows_libs):
-    _, show_map = channel_engine.build_library_index("http://t")
+    _, show_map, _ = channel_engine.build_library_index("http://t")
     assert "cheers" in show_map     # from TV Shows
     assert "daria" in show_map      # from Cartoons (would be dropped by first-only)
     assert len(show_map["daria"]["programs"]) == 2
 
 
 def test_indexes_movies_from_all_movie_libraries(two_shows_libs):
-    movie_map, _ = channel_engine.build_library_index("http://t")
+    movie_map, _, _ = channel_engine.build_library_index("http://t")
     assert "big movie" in movie_map
     assert "indie film" in movie_map  # from the second movie library
 
@@ -80,7 +80,7 @@ def test_show_in_multiple_libraries_is_not_doubled(two_shows_libs):
     Otherwise resolve() returns 2x the episodes while Tunarr's single show-slot
     enumerates 1x → the scheduler diff never converges and patches every cycle.
     """
-    _, show_map = channel_engine.build_library_index("http://t")
+    _, show_map, _ = channel_engine.build_library_index("http://t")
     assert len(show_map["daria"]["programs"]) == 2  # one library's worth, not 4
 
 
@@ -90,7 +90,7 @@ def test_duplicate_show_prefers_the_playable_copy(two_shows_libs):
     Mirrors the real bug: a dead 'Daria' (all files missing) in 'TV Shows' shadowing the
     real one in 'Cartoons'. Picking the dead copy gives a channel that plays nothing.
     """
-    _, show_map = channel_engine.build_library_index("http://t")
+    _, show_map, _ = channel_engine.build_library_index("http://t")
     phantom = show_map["phantom"]["programs"]
     assert len(phantom) == 3                                   # the tv2 (real) copy
     assert all(p["program"]["state"] == "ok" for p in phantom)  # not the all-missing one

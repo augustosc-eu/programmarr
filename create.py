@@ -250,7 +250,7 @@ def main():
     # ── Build library index ────────────────────────────────────────────────────
     print("\nIndexing Tunarr library...")
     try:
-        movie_map, show_map = build_library_index(tunarr_url)
+        movie_map, show_map, extra_maps = build_library_index(tunarr_url)
     except ChannelEngineError as e:
         print(f"ERROR: {e}")
         sys.exit(1)
@@ -293,6 +293,7 @@ def main():
             plex_url=plex_url, plex_token=plex_token,
             plex_sections=plex_sections, collection_cache=collection_cache,
             franchise_index=franchise_index,
+            extra_maps=extra_maps,
         )
 
         if not resolved:
@@ -305,10 +306,12 @@ def main():
         if probe := args.probe:
             tv_count = sum(1 for r in resolved if r["type"] == "TV")
             movie_count = sum(1 for r in resolved if r["type"] == "Movie")
+            other_count = sum(1 for r in resolved if r["type"] not in ("TV", "Movie"))
             ep_count = sum(len(r["programs"]) for r in resolved if r["type"] == "TV")
             comm_note = f" | commercials ({comm.get('pad_minutes', 5)}m gaps)" if comm_filler else ""
             print(f"  [PROBE] #{number} {name} | shuffle={shuffle} | "
-                  f"{tv_count} shows ({ep_count} eps) + {movie_count} movies{comm_note}")
+                  f"{tv_count} shows ({ep_count} eps) + {movie_count} movies + "
+                  f"{other_count} other items{comm_note}")
             if missing:
                 print(f"    Missing: {', '.join(missing[:5])}{'...' if len(missing) > 5 else ''}")
             stats["created"] += 1

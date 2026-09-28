@@ -56,6 +56,24 @@
         "Parasite",
         {"collection": "A24 Films"}
       ]
+    },
+    {
+      "number": 82,
+      "name": "Music Video Mix",
+      "shuffle": "shuffle",
+      "content": [
+        {"music_video": "Song One"},
+        {"music_video": "Song Two"}
+      ]
+    },
+    {
+      "number": 83,
+      "name": "Late Night Radio",
+      "shuffle": "shuffle",
+      "content": [
+        {"music": "Track One"},
+        {"other_video": "Station Ident"}
+      ]
     }
   ],
   "orphaned": [],

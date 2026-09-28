@@ -68,7 +68,7 @@ def preview_recipe(req: PreviewRequest):
         raise HTTPException(400, "Tunarr not configured")
 
     try:
-        movie_map, show_map = channel_engine.build_library_index(tunarr_url)
+        movie_map, show_map, _extra_maps = channel_engine.build_library_index(tunarr_url)
     except channel_engine.ChannelEngineError as e:
         raise HTTPException(502, f"Tunarr library unavailable: {e}")
 

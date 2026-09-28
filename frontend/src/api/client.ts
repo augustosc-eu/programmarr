@@ -199,8 +199,10 @@ export interface Commercials { filler_list_id: string; filler_list_name?: string
 export interface PlaybackSetting { structure: 'interleaved' | 'timeline'; episodes_per_block?: number }
 export interface MatchRef { match: 'title_contains'; value: string; order?: string | null; exclude?: string[] }
 export interface FranchiseRef { match: 'franchise'; name: string; order?: string | null; exclude?: string[] }
-// { movie } / { show }: a title pinned to one media type (a movie and a show can share a title).
-export type ContentItem = string | { collection: string } | { movie: string } | { show: string } | MatchRef | FranchiseRef;
+// Typed refs pin a title to one Tunarr media type when names collide.
+export type ContentItem = string | { collection: string } | { movie: string } | { show: string }
+  | { music: string } | { music_video: string } | { other_video: string }
+  | MatchRef | FranchiseRef;
 export function isMatchRef(c: ContentItem): c is MatchRef {
   return typeof c === 'object' && c !== null && 'match' in c;
 }
@@ -244,6 +246,9 @@ export interface CsvInfo {
   preview?: string[];
   movies?: number;
   tv_shows?: number;
+  music?: number;
+  music_videos?: number;
+  other_videos?: number;
   skipped_movies?: number;
   skipped_shows?: number;
 }
@@ -261,6 +266,7 @@ export interface MarathonFacet { title: string; episodes: number; seasons: numbe
 export interface TvMovieGenreFacet { genre: string; tv_count: number; movie_count: number }
 /** A TMDB-keyword themed channel candidate (computed from the F9 enrichment cache). */
 export interface ThemeFacet { name: string; count: number; keyword_ids: number[]; titles: string[] }
+export interface MediaTypeFacet { type: 'Music' | 'Music Video' | 'Other Video'; label: string; count: number }
 export interface LibraryFacets {
   exists: boolean;
   movies?: number;
@@ -287,13 +293,15 @@ export interface LibraryFacets {
   moods?: EntityFacet[];
   /** Movie counts by Plex Style tag, above STYLE_MIN floor. Empty when column absent. */
   styles?: EntityFacet[];
+  /** Tunarr terminal media types available for ready-made whole-library channels. */
+  media_types?: MediaTypeFacet[];
 }
 
 // ── Planner v2 candidate composition ──
 export type CandidateKind =
   | 'genre' | 'genre_decade' | 'blend' | 'studio' | 'director' | 'actor' | 'tv_genre' | 'marathon'
   | 'tv_movie_mix' | 'network' | 'programming_block' | 'franchise' | 'theme'
-  | 'country' | 'mood' | 'style';
+  | 'country' | 'mood' | 'style' | 'media_type';
 export interface CandidateSpec {
   kind: CandidateKind;
   name?: string;
@@ -342,7 +350,12 @@ export interface PromptOptions {
   include_types?: string[];
   exclude_types?: string[];
 }
-export interface PlexLibrary { key: string; title: string; type: 'movie' | 'show'; server?: string }
+export interface PlexLibrary {
+  key: string;
+  title: string;
+  type: 'movie' | 'show' | 'music' | 'music_video' | 'other_video';
+  server?: string;
+}
 export interface PlexCollection { id: string; name: string; count: number; section: string; summary: string; has_poster: boolean }
 export interface CollectionSelection { name: string; channel_number: number; include: boolean }
 export interface LogEntry { name: string; size: number; modified: number }

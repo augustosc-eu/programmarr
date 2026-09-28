@@ -16,6 +16,7 @@ import {
   api, streamPipeline, StreamEvent, PlexCollection, PlexLibrary, CollectionSelection,
   LibraryFacets, CandidateSpec, CandidateKind, EntityFacet, GenreDecadeFacet, BlendFacet, ValidateResult,
   FillerList, Commercials, TvMovieGenreFacet, PlannerStateFile, ProgrammingBlock,
+  MediaTypeFacet,
   FranchiseCandidate, DeployPreviewResult, ThemeFacet,
 } from '../api/client';
 import TerminalOutput from '../components/TerminalOutput';
@@ -77,6 +78,7 @@ const cid = {
   country: (v: string) => `country:${v}`,
   mood: (v: string) => `mood:${v}`,
   style: (v: string) => `style:${v}`,
+  mediaType: (v: string) => `media:${v}`,
 };
 
 interface PlannerState {
@@ -412,6 +414,7 @@ function ExportStep({ onDone }: { onDone: () => void }) {
 
   const movieLibs = libraries.filter(l => l.type === 'movie');
   const tvLibs = libraries.filter(l => l.type === 'show');
+  const extraLibs = libraries.filter(l => l.type !== 'movie' && l.type !== 'show');
   const selectedCount = Object.values(libSels).filter(Boolean).length;
 
   async function run() {
@@ -420,6 +423,7 @@ function ExportStep({ onDone }: { onDone: () => void }) {
     const tvSections      = tvLibs.filter(l => libSels[l.key] && l.key.startsWith('plex:')).map(l => l.key.slice(5));
     const tunarrMovieLibs = movieLibs.filter(l => libSels[l.key] && l.key.startsWith('tunarr:')).map(l => l.key.slice(7));
     const tunarrTvLibs    = tvLibs.filter(l => libSels[l.key] && l.key.startsWith('tunarr:')).map(l => l.key.slice(7));
+    const tunarrExtraLibs = extraLibs.filter(l => libSels[l.key] && l.key.startsWith('tunarr:')).map(l => l.key.slice(7));
     setLines([]); setDone(false); setSummary(null); setRunning(true);
     try {
       const code = await streamPipeline('/pipeline/export', {}, (ev: StreamEvent) => {
@@ -430,6 +434,7 @@ function ExportStep({ onDone }: { onDone: () => void }) {
         tv_sections: tvSections,
         tunarr_movie_libs: tunarrMovieLibs,
         tunarr_tv_libs: tunarrTvLibs,
+        tunarr_extra_libs: tunarrExtraLibs,
       });
       const ok = code === 0;
       setSuccess(ok); setDone(true);
@@ -445,7 +450,7 @@ function ExportStep({ onDone }: { onDone: () => void }) {
     <Stack gap="md">
       <Card withBorder p="md">
         <Text fw={700} mb={4}>Libraries to scan</Text>
-        <Text size="xs" c="dimmed" mb="xs">Pick the libraries holding your movies &amp; shows.</Text>
+        <Text size="xs" c="dimmed" mb="xs">Pick the libraries holding your movies, shows, music, and other media.</Text>
         <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={16} />} py="xs" mb="sm">
           <Text size="xs">
             <b>Uncheck any commercials, trailers, or bumper libraries.</b> Plex files them as “movies,”
@@ -493,6 +498,22 @@ function ExportStep({ onDone }: { onDone: () => void }) {
                 ))}
               </Stack>
             )}
+            {extraLibs.length > 0 && (
+              <Stack gap={6}>
+                <Text size="xs" fw={600} c="dimmed" tt="uppercase">Music &amp; Other</Text>
+                {extraLibs.map((lib, i) => (
+                  <Box key={lib.key}>
+                    {lib.server && (i === 0 || extraLibs[i - 1].server !== lib.server) && (
+                      <Divider label={lib.server} labelPosition="left" mt={i === 0 ? 0 : 6} mb={2}
+                        styles={{ label: { fontSize: 11, fontWeight: 600 } }} />
+                    )}
+                    <Checkbox label={`${lib.title} (${lib.type.replace(/_/g, ' ')})`} checked={libSels[lib.key] ?? true}
+                      onChange={(e) => { const v = e.currentTarget.checked; setLibSels(s => ({ ...s, [lib.key]: v })); }}
+                      size="sm" disabled={running} />
+                  </Box>
+                ))}
+              </Stack>
+            )}
           </SimpleGrid>
         )}
       </Card>
@@ -513,7 +534,7 @@ function ExportStep({ onDone }: { onDone: () => void }) {
             <Group gap="sm" wrap="nowrap">
               <ThemeIcon color="green" variant="light" size="sm" radius="xl" style={{ flexShrink: 0 }}><IconCheck size={12} /></ThemeIcon>
               <Text size="sm" fw={600}>
-                {summary.movies ?? '—'} movies · {summary.tv_shows ?? '—'} TV shows · {Math.round((summary.size ?? 0) / 1024)} KB
+                {summary.movies ?? '—'} movies · {summary.tv_shows ?? '—'} TV shows · {(summary.music ?? 0) + (summary.music_videos ?? 0) + (summary.other_videos ?? 0)} music/other · {Math.round((summary.size ?? 0) / 1024)} KB
                 {skipped > 0 && <Text span size="sm" c="yellow.4"> · {skipped} skipped (not in Tunarr)</Text>}
               </Text>
             </Group>
@@ -814,7 +835,7 @@ function PlannerStep({ planner, setPlanner, setup, aiExtras, setAiExtras, onDone
   const [error, setError] = useState<string | null>(null);
   const [building, setBuilding] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  // Accordion: which of the three sections (0=TV, 1=Movies, 2=TV+Movies) is open. Section 0 starts open.
+  // Accordion: 0=TV, 1=Movies, 2=TV+Movies, 3=Music & Other. Section 0 starts open.
   const [openSection, setOpenSection] = useState<number>(0);
   const [resetOpen, { open: openReset, close: closeReset }] = useDisclosure(false);
   function openNext(current: number) { setOpenSection(current + 1); }
@@ -1642,7 +1663,6 @@ function PlannerStep({ planner, setPlanner, setup, aiExtras, setAiExtras, onDone
           ...(f.tv_movie_genres ?? []).map(x => cid.tvmix(x.genre)),
           ...franchises.map(fr => cid.franchise(fr.name)),
         ])}
-        isLast
       >
         <Stack gap="sm">
           {(f.tv_movie_genres?.length ?? 0) > 0 ? (() => {
@@ -1747,7 +1767,34 @@ function PlannerStep({ planner, setPlanner, setup, aiExtras, setAiExtras, onDone
         </Stack>
       </AccordionSection>
 
-      {/* Build bar — reflects selections across all three sections */}
+      {/* ── SECTION 3: MUSIC + OTHER MEDIA ─────────────────────────────────── */}
+      <AccordionSection
+        index={3} openSection={openSection} onToggle={toggleSection} onNext={openNext}
+        title="Music + Other Media"
+        selCount={countSel((f.media_types ?? []).map(x => cid.mediaType(x.type)))}
+        isLast
+      >
+        <Stack gap="xs">
+          {(f.media_types?.length ?? 0) > 0 ? (f.media_types as MediaTypeFacet[]).map((media) => {
+            const id = cid.mediaType(media.type);
+            const spec: CandidateSpec = {
+              kind: 'media_type',
+              value: media.type,
+              name: media.type === 'Music' ? 'All Music' : media.type === 'Music Video' ? 'Music Videos' : 'Other Videos',
+            };
+            return (
+              <CandRow key={id} id={id} count={media.count} label={spec.name!}
+                checked={isSel(id)} onToggle={() => toggleSel(id, spec)} />
+            );
+          }) : (
+            <Text size="sm" c="dimmed">
+              No Tunarr Music, Music Video, or Other Video libraries were included in Export.
+            </Text>
+          )}
+        </Stack>
+      </AccordionSection>
+
+      {/* Build bar — reflects selections across all four sections */}
       <Card withBorder p="md">
         <Group justify="space-between">
           <Box>

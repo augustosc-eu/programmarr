@@ -14,6 +14,7 @@ No dependencies beyond the Python standard library.
 import base64
 import json
 import os
+import random
 import re
 import uuid
 import urllib.error
@@ -33,6 +34,41 @@ SHUFFLE_MAP = {
     "shuffle": "shuffle",
     "block":   "block",
 }
+
+# Tunarr library mediaType values are plural while terminal program types are
+# singular.  Keep the public channels.json names stable and human-readable:
+# ``music`` means a Tunarr ``track`` program, while the other two match Tunarr.
+EXTRA_LIBRARY_KINDS = {
+    "music": "music",
+    "tracks": "music",
+    "music_video": "music_video",
+    "music_videos": "music_video",
+    "other_video": "other_video",
+    "other_videos": "other_video",
+}
+EXTRA_PROGRAM_KINDS = {
+    "track": "music",
+    "music_video": "music_video",
+    "other_video": "other_video",
+}
+EXTRA_KIND_LABELS = {
+    "music": "Music",
+    "music_video": "Music Video",
+    "other_video": "Other Video",
+}
+
+
+def _program_entity_name(value):
+    if isinstance(value, dict):
+        return value.get("title") or value.get("name") or ""
+    return value or ""
+
+
+def extra_program_reference(prog):
+    """Human-stable key for terminal media whose title may not be unique."""
+    title = (prog.get("title") or "").strip()
+    artist = (prog.get("artistName") or _program_entity_name(prog.get("artist"))).strip()
+    return f"{artist} — {title}" if artist else title
 
 
 # ── HTTP helpers ───────────────────────────────────────────────────────────────
@@ -222,14 +258,29 @@ def _no_plex_source_error(tunarr_url):
 
 
 def build_library_index(tunarr_url):
-    plex_sources = get_plex_sources(tunarr_url)
-    if not plex_sources:
+    all_sources = api(tunarr_url, "GET", "/api/media-sources") or []
+    plex_sources = [s for s in all_sources if s.get("type") == "plex"]
+
+    # TunarrTube publishes its rendered files as a Tunarr Local Media library,
+    # normally with mediaType=music_videos.  Music and Other Videos use the same
+    # terminal-program shape and are useful in hand-authored channel templates.
+    # Movie/show indexing remains Plex-backed; only these terminal media kinds
+    # are intentionally accepted from every Tunarr source.
+    extra_libs = []
+    for source in all_sources:
+        for lib in source.get("libraries", []):
+            kind = EXTRA_LIBRARY_KINDS.get((lib.get("mediaType") or "").lower())
+            if kind and lib.get("enabled"):
+                extra_libs.append((source.get("name", source.get("type", "Tunarr")), lib, kind))
+
+    if not plex_sources and not extra_libs:
         raise _no_plex_source_error(tunarr_url)
 
     movie_map = {}
     # title-key -> {title, by_lib: {lib_id: {showId, programs}}}
     # Collected across ALL Plex sources before picking the best copy per show.
     tv_candidates = {}
+    extra_maps = {kind: {} for kind in EXTRA_KIND_LABELS}
     # api() reports every failure as None, and treating that as "no programs"
     # turns an outage into a silent empty index — which downstream looks like a
     # library with no content and would deploy channels with nothing on them.
@@ -280,6 +331,24 @@ def build_library_index(tunarr_url):
                     entry = c["by_lib"].setdefault(lib["id"], {"showId": show_id, "programs": []})
                     entry["programs"].append(p)
 
+    for source_name, lib, library_kind in extra_libs:
+        print(f"  Indexing {EXTRA_KIND_LABELS[library_kind].lower()} ({source_name})...")
+        programs = api(tunarr_url, "GET", f"/api/media-libraries/{lib['id']}/programs", timeout=120)
+        if programs is None:
+            failed_libs.append(f"{source_name}/{lib.get('name', lib['id'])}")
+            continue
+        attempted_libs += 1
+        for p in programs:
+            prog = p.get("program", {})
+            kind = EXTRA_PROGRAM_KINDS.get(prog.get("type")) or library_kind
+            if kind not in extra_maps:
+                continue
+            title = (prog.get("title") or "").strip()
+            if title:
+                extra_maps[kind].setdefault(title.lower(), p)
+                reference = extra_program_reference(prog)
+                extra_maps[kind].setdefault(reference.lower(), p)
+
     if failed_libs and attempted_libs == 0:
         raise ChannelEngineError(
             "Could not read any library from Tunarr (" + ", ".join(failed_libs) + "). "
@@ -306,7 +375,12 @@ def build_library_index(tunarr_url):
         show_map[key] = {"title": c["title"], "showId": best["showId"], "programs": best["programs"]}
     print(f"  Indexed {len(show_map)} TV shows")
 
-    return movie_map, show_map
+    for kind, title_map in extra_maps.items():
+        if title_map:
+            unique_ids = {p.get("id") for p in title_map.values()}
+            print(f"  Indexed {len(unique_ids)} {EXTRA_KIND_LABELS[kind].lower()} items")
+
+    return movie_map, show_map, extra_maps
 
 
 # ── Title resolution ───────────────────────────────────────────────────────────
@@ -315,25 +389,38 @@ def _playable_count(programs):
     return sum(1 for p in programs if p.get("program", {}).get("state") != "missing")
 
 
-def resolve_title(title, movie_map, show_map, kind=None):
+def resolve_title(title, movie_map, show_map, kind=None, extra_maps=None):
     key = title.lower().strip()
-    movie = movie_map.get(key) if kind != "show" else None
-    show = show_map.get(key) if kind != "movie" else None
+    extra_maps = extra_maps or {}
+
+    # ``track`` is accepted as a low-level alias, but templates should normally
+    # use the friendlier {"music": "..."} spelling.
+    if kind == "track":
+        kind = "music"
+
+    candidates = []
+    if kind in (None, "show"):
+        show = show_map.get(key)
+        if show is not None:
+            candidates.append({"type": "TV", "title": show["title"],
+                               "showId": show["showId"], "programs": show["programs"]})
+    if kind in (None, "movie"):
+        movie = movie_map.get(key)
+        if movie is not None:
+            candidates.append({"type": "Movie", "title": title, "programs": [movie]})
+    for extra_kind, label in EXTRA_KIND_LABELS.items():
+        if kind in (None, extra_kind):
+            program = extra_maps.get(extra_kind, {}).get(key)
+            if program is not None:
+                candidates.append({"type": label, "title": title, "programs": [program]})
+
     # Same exact title for a movie AND a series (e.g. the 2017 "Baywatch" film vs the
-    # 1989 series). A plain title can't disambiguate, so prefer whichever has more
+    # 1989 series), or across any other media types. A plain title can't
+    # disambiguate, so prefer whichever has more
     # PLAYABLE programs — the same tie-break build_library_index uses for dupes. A real
-    # series (many episodes) beats a lone movie; an all-missing series yields to it.
-    # A typed ref ({"movie": t} / {"show": t}, passed as `kind`) skips the tie-break.
-    if movie and show:
-        if _playable_count(show["programs"]) >= _playable_count([movie]):
-            movie = None
-        else:
-            show = None
-    if movie is not None:
-        return {"type": "Movie", "title": title, "programs": [movie]}
-    if show is not None:
-        return {"type": "TV", "title": show["title"], "showId": show["showId"], "programs": show["programs"]}
-    return None
+    # series (many episodes) beats a single terminal item; an all-missing series
+    # yields to a playable item. A typed ref skips the tie-break entirely.
+    return max(candidates, key=lambda item: _playable_count(item["programs"]), default=None)
 
 
 # ── Franchise matching (live recipes) ──────────────────────────────────────────
@@ -540,13 +627,14 @@ def resolve_collection(plex_url, token, name, sections, cache):
 
 def resolve_content(content_list, movie_map, show_map,
                     plex_url=None, plex_token=None, plex_sections=None, collection_cache=None,
-                    franchise_index=None):
+                    franchise_index=None, extra_maps=None):
     """Resolve a channel's content list into (resolved_items, missing).
 
     Each entry is one of:
     - A plain title string — matched against the Tunarr library index by exact title.
-    - A {"movie": "Title"} or {"show": "Title"} ref — exact title, restricted to that
-      media type (disambiguates a movie and a show that share a title).
+    - A typed ref — {"movie": "Title"}, {"show": "Title"},
+      {"music": "Title"}, {"music_video": "Title"}, or
+      {"other_video": "Title"} — exact title, restricted to that media type.
     - A {"collection": "Name"} ref — expanded to member titles via Plex, then each
       title is matched against the library index.
     - A {"match": "title_contains", "value": "..."} ref — word-boundary scan of the
@@ -567,8 +655,9 @@ def resolve_content(content_list, movie_map, show_map,
     matched_items = []
     missing = []
     for entry in content_list:
-        if isinstance(entry, dict) and ("movie" in entry or "show" in entry):
-            kind = "movie" if "movie" in entry else "show"
+        typed_kinds = ("movie", "show", "music", "track", "music_video", "other_video")
+        if isinstance(entry, dict) and any(k in entry for k in typed_kinds):
+            kind = next(k for k in typed_kinds if k in entry)
             expanded_titles.append((entry[kind], kind))  # resolved in order below
         elif isinstance(entry, dict) and "collection" in entry:
             col_name = entry["collection"]
@@ -610,7 +699,7 @@ def resolve_content(content_list, movie_map, show_map,
     resolved = []
     for entry in expanded_titles:
         title, kind = entry if isinstance(entry, tuple) else (entry, None)
-        item = resolve_title(title, movie_map, show_map, kind=kind)
+        item = resolve_title(title, movie_map, show_map, kind=kind, extra_maps=extra_maps)
         if item:
             resolved.append(item)
         else:
@@ -686,6 +775,31 @@ def build_schedule(shuffle_type, resolved_items, pad_ms=0, playback=None):
             for p in programs:
                 lineup.append({"type": "content", "id": p["id"],
                                "duration": int(p.get("program", {}).get("duration") or 0) or 1})
+        return {"type": "manual", "lineup": lineup, "append": False}
+
+    # Tunarr's random-slot schema has no public slot type for audio tracks.
+    # A "movie" slot does include music_video and other_video programs, but it
+    # deliberately excludes tracks, so a mixed/random schedule would otherwise
+    # resolve successfully and then play only flex.  A manual lineup accepts all
+    # terminal program types and is therefore the compatible representation for
+    # Music channels.  Shuffle once when the channel is programmed; the lineup
+    # then loops in Tunarr like any other manual channel.
+    has_tracks = any(
+        p.get("program", {}).get("type") == "track"
+        for p in all_programs
+    )
+    if has_tracks:
+        programs = list(all_programs)
+        if shuffle_type == "shuffle":
+            random.shuffle(programs)
+        lineup = [
+            {
+                "type": "content",
+                "id": p["id"],
+                "duration": int(p.get("program", {}).get("duration") or 0) or 1,
+            }
+            for p in programs
+        ]
         return {"type": "manual", "lineup": lineup, "append": False}
 
     is_ordered = shuffle_type == "ordered"

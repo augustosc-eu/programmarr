@@ -108,7 +108,7 @@ def test_partial_failure_warns_but_continues(monkeypatch, capsys):
         return None                      # m2 fails
     monkeypatch.setattr(channel_engine, "api", _api)
 
-    movie_map, _ = channel_engine.build_library_index("http://tunarr")
+    movie_map, _, _ = channel_engine.build_library_index("http://tunarr")
     assert "heat" in movie_map
 
     out = capsys.readouterr().out
@@ -123,8 +123,9 @@ def test_genuinely_empty_library_is_not_an_error(monkeypatch):
         return []
     monkeypatch.setattr(channel_engine, "api", _api)
 
-    movie_map, show_map = channel_engine.build_library_index("http://tunarr")
+    movie_map, show_map, extra_maps = channel_engine.build_library_index("http://tunarr")
     assert movie_map == {} and show_map == {}
+    assert extra_maps == {"music": {}, "music_video": {}, "other_video": {}}
 
 
 # ── P0-2: capability detection instead of a guessed version gate ──────────────

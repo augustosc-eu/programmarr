@@ -21,9 +21,9 @@ for _p in (str(BACKEND), str(ROOT)):
 
 # Exact header export.py writes (see export.py fieldnames). Multi-valued columns
 # (Genres / Director / Actors / Country / Mood / Style) are pipe-separated.
-CSV_FIELDS = ["Title", "Year", "Type", "Rating", "Genres",
+CSV_FIELDS = ["Title", "Reference", "Year", "Type", "Rating", "Genres",
               "Director", "Studio", "Actors", "Seasons", "Episodes",
-              "Country", "Mood", "Style"]
+              "Country", "Mood", "Style", "Artist", "Album", "Source"]
 
 
 def movie(title, year=2000, genres="", studio="", director="", actors="", rating="PG",

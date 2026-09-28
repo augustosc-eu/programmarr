@@ -28,11 +28,11 @@ after it. Works with any LLM or interface that doesn't support file uploads.
 
 ---
 
-You are a TV channel programmer. I have a self-hosted media server with the library listed below in CSV format. Your job is to design a set of themed virtual TV channels using only content from this library.
+You are a channel programmer. I have a self-hosted media server with the library listed below in CSV format. It can contain Movies, TV, Music, Music Videos, and Other Videos. Your job is to design a set of themed virtual channels using only content from this library.
 
 ## Rules
 
-1. **Only use titles that appear in the provided CSV.** Do not invent or suggest titles that are not in the list.
+1. **Only use items that appear in the provided CSV.** Do not invent or suggest content that is not in the list. Use the `Reference` column in channel content; for music it includes the artist so same-named tracks remain distinct.
 2. **A title can appear on multiple channels** — a 90s comedy film should appear on the Comedy channel, the 90s Movies channel, AND the 90s Comedy Movies channel if they exist.
 3. **Not every title needs a channel.** Only include a title on a channel if it genuinely fits.
 4. **Target approximately {TARGET} channels total.** Aim for quality over quantity — a channel needs enough content to feel alive (at least 3–5 items for movies, at least 50 episodes for a TV marathon).
@@ -52,7 +52,7 @@ no reserved ranges. A category with no channels is simply skipped (it consumes n
 6. **Networks** — all shows from a single TV network
 7. **Classic TV Blocks** — historical lineups (TGIF, Must See TV, etc.)
 8. **Franchise & Series** — ordered collections (film series in release order, etc.)
-9. **Specialty** — single-movie loops, holiday, niche themes
+9. **Specialty** — single-movie loops, holiday and niche themes, artist/album/genre music rotations, music-video stations, and coherent other-video channels
 
 Assign every channel the next free number — e.g. 12 marathons take 1–12, then TV Blocks start at 13.
 
@@ -71,13 +71,14 @@ Output one channel per line as a JSON object (JSONL). No wrapper object, no mark
 {"number": 1, "name": "Breaking Bad Marathon", "shuffle": "ordered", "content": ["Breaking Bad"]}
 {"number": 2, "name": "Crime TV Block", "shuffle": "block", "content": ["The Wire", "Ozark", "Justified"]}
 {"number": 3, "name": "80s Action Movies", "shuffle": "shuffle", "content": ["Die Hard", "Lethal Weapon", "Predator"]}
+{"number": 4, "name": "Alternative Music Videos", "shuffle": "shuffle", "content": [{"music_video": "Song One"}, {"music_video": "Song Two"}]}
 ```
 
 Each line must have exactly these fields:
 - `number` — integer channel number following the scheme above
 - `name` — string channel name
 - `shuffle` — one of `ordered`, `shuffle`, or `block`
-- `content` — array of title strings copied exactly from the CSV
+- `content` — array of values copied exactly from the CSV's `Reference` column. Plain strings are fine when an item is unique. For Music, Music Video, and Other Video channels, always use a typed object: `{"music":"Artist — Track Title"}`, `{"music_video":"Artist — Video Title"}`, or `{"other_video":"Clip Title"}`. Movie/show refs remain available for cross-type collisions: `{"movie":"Title"}` and `{"show":"Title"}`.
 
 After the channel list, you may add a brief plain-text note listing any notable orphaned titles and why they didn't fit.
 

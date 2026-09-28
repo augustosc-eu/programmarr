@@ -183,6 +183,7 @@ class ExportOptions(BaseModel):
     tv_sections: Optional[list[str]] = None
     tunarr_movie_libs: Optional[list[str]] = None  # Tunarr library UUIDs for extra sources
     tunarr_tv_libs: Optional[list[str]] = None
+    tunarr_extra_libs: Optional[list[str]] = None  # Music / Music Videos / Other Videos
 
 
 @router.get("/pipeline/libraries")
@@ -218,17 +219,24 @@ def list_libraries():
     # ── All other Tunarr-connected sources (key prefixed "tunarr:") ────────────
     if tunarr_url:
         for source in (channel_engine.api(tunarr_url, "GET", "/api/media-sources") or []):
-            # Skip the primary Plex — its sections are already listed above.
-            if source.get("type") == "plex" and source.get("uri", "").rstrip("/").lower() == plex_url:
-                continue
+            # The primary Plex movie/show sections are already listed above, but
+            # its music libraries are only available through Tunarr's terminal
+            # program API and must remain selectable here.
+            is_primary_plex = (
+                source.get("type") == "plex"
+                and source.get("uri", "").rstrip("/").lower() == plex_url
+            )
             source_name = source.get("name", source.get("type", "Unknown"))
             for lib in source.get("libraries", []):
                 if not lib.get("enabled"):
                     continue
                 media_type = lib.get("mediaType", "")
                 lib_type = ("movie" if media_type in ("movie", "movies")
-                            else "show" if media_type == "shows" else None)
+                            else "show" if media_type == "shows"
+                            else channel_engine.EXTRA_LIBRARY_KINDS.get(media_type.lower()))
                 if not lib_type:
+                    continue
+                if is_primary_plex and lib_type in ("movie", "show"):
                     continue
                 result.append({"key": f"tunarr:{lib['id']}", "title": lib.get("name", lib["id"]),
                                 "type": lib_type, "server": source_name})
@@ -254,6 +262,8 @@ async def run_export(opts: ExportOptions = ExportOptions()):
         args += ["--tunarr-movie-libs", ",".join(opts.tunarr_movie_libs)]
     if opts.tunarr_tv_libs is not None:
         args += ["--tunarr-tv-libs", ",".join(opts.tunarr_tv_libs)]
+    if opts.tunarr_extra_libs is not None:
+        args += ["--tunarr-extra-libs", ",".join(opts.tunarr_extra_libs)]
     return _sse(_stream("export.py", args, "export"))
 
 
@@ -272,7 +282,7 @@ def csv_info():
     if not p.exists():
         return {"exists": False}
     stat = p.stat()
-    rows, movies, tv_shows, preview = 0, 0, 0, []
+    rows, movies, tv_shows, music, music_videos, other_videos, preview = 0, 0, 0, 0, 0, 0, []
     try:
         with open(p, encoding="utf-8") as f:
             for i, line in enumerate(f):
@@ -287,6 +297,12 @@ def csv_info():
                     movies += 1
                 elif t == "TV":
                     tv_shows += 1
+                elif t == "Music":
+                    music += 1
+                elif t == "Music Video":
+                    music_videos += 1
+                elif t == "Other Video":
+                    other_videos += 1
     except Exception:
         pass
     result: dict = {
@@ -295,6 +311,9 @@ def csv_info():
         "rows": rows,
         "movies": movies,
         "tv_shows": tv_shows,
+        "music": music,
+        "music_videos": music_videos,
+        "other_videos": other_videos,
         "modified": stat.st_mtime,
         "preview": preview,
     }
@@ -399,6 +418,7 @@ def library_facets(min_items: int = 5):
     show_recs: list[dict] = []  # per-show marathon candidates
     tv_show_titles: list[str] = []  # TV show titles for TVmaze network lookup
     movies = tv = marathon = 0
+    media_type_counts = {"Music": 0, "Music Video": 0, "Other Video": 0}
 
     with open(p, encoding="utf-8") as f:
         for row in _csv.DictReader(f):
@@ -436,6 +456,8 @@ def library_facets(min_items: int = 5):
                     tv_show_titles.append(title)
                 if title and eps >= 2:
                     show_recs.append({"title": title, "episodes": eps, "seasons": _safe_int(row.get("Seasons")) or 0})
+            elif t in media_type_counts:
+                media_type_counts[t] += 1
 
     # Networks facet: derive from TVmaze cache (keyed by library signature).
     # If the cache is absent/stale (scan not done yet), return empty — the frontend
@@ -546,6 +568,10 @@ def library_facets(min_items: int = 5):
         "countries": entity_list(country_counts, COUNTRY_MIN),
         "moods": entity_list(mood_counts, MOOD_MIN),
         "styles": entity_list(style_counts, STYLE_MIN),
+        "media_types": [
+            {"type": typ, "label": typ, "count": count}
+            for typ, count in media_type_counts.items() if count
+        ],
     }
 
 
@@ -1823,7 +1849,7 @@ def discover_prompt(opts: DiscoverOptions = DiscoverOptions()):
 # ── Planner v2: deterministic candidate composition ──────────────────────────────
 
 class CandidateSpec(BaseModel):
-    kind: str  # genre | genre_decade | blend | studio | director | actor | tv_genre | marathon | network | programming_block | theme | country | mood | style
+    kind: str  # genre | ... | style | media_type
     name: Optional[str] = None
     genre: Optional[str] = None
     genres: Optional[list[str]] = None
@@ -1861,6 +1887,7 @@ _CATEGORY = {
     "country":           ("movie",             "shuffle"),
     "mood":              ("movie",             "shuffle"),
     "style":             ("movie",             "shuffle"),
+    "media_type":        ("specialty",         "shuffle"),
 }
 # Compose categories in the order they appear in CANONICAL_ORDER (subset).
 _CATEGORY_ORDER = ["marathon", "tv_block", "network", "programming_block", "tv_movie_mix", "movie", "entity", "franchise", "specialty"]
@@ -1871,15 +1898,16 @@ def _load_library():
     import csv as _csv
     p = DATA_DIR / "plex_library.csv"
     if not p.exists():
-        return [], []
-    movies, shows = [], []
+        return [], [], []
+    movies, shows, other_media = [], [], []
     with open(p, encoding="utf-8") as f:
         for row in _csv.DictReader(f):
-            (movies if row.get("Type") == "Movie" else shows if row.get("Type") == "TV" else []).append(row)
-    return movies, shows
+            typ = row.get("Type")
+            (movies if typ == "Movie" else shows if typ == "TV" else other_media).append(row)
+    return movies, shows, other_media
 
 
-def _resolve_spec(spec: CandidateSpec, movies: list[dict], shows: list[dict]) -> list:
+def _resolve_spec(spec: CandidateSpec, movies: list[dict], shows: list[dict], other_media: list[dict]) -> list:
     """Return the sorted, de-duplicated content list a candidate spec selects.
 
     Titles are plain strings, except a title that is BOTH a movie and a show in the
@@ -1956,6 +1984,20 @@ def _resolve_spec(spec: CandidateSpec, movies: list[dict], shows: list[dict]) ->
     elif spec.kind == "style" and spec.value:
         v = spec.value.lower()
         titles = [m["Title"] for m in movies if any(s.lower() == v for s in _multi(m.get("Style")))]
+    elif spec.kind == "media_type" and spec.value:
+        ref_kind = {"Music": "music", "Music Video": "music_video",
+                    "Other Video": "other_video"}.get(spec.value)
+        if not ref_kind:
+            return []
+        # Always type these refs: TunarrTube/music titles commonly collide with a
+        # movie, show, or another song/video title.
+        refs = []
+        for row in other_media:
+            if row.get("Type") != spec.value or not row.get("Title"):
+                continue
+            fallback = f"{row['Artist']} — {row['Title']}" if row.get("Artist") else row["Title"]
+            refs.append({ref_kind: row.get("Reference") or fallback})
+        return refs
     elif spec.kind == "franchise" and spec.titles:
         # Franchise: intersect the checked member titles against both movies AND TV shows,
         # then sort by year ascending (so content plays in release order).
@@ -2007,6 +2049,9 @@ def _auto_name(spec: CandidateSpec) -> str:
         return spec.value or "Mood Channel"
     if spec.kind == "style":
         return spec.value or "Style Channel"
+    if spec.kind == "media_type":
+        return {"Music": "All Music", "Music Video": "Music Videos",
+                "Other Video": "Other Videos"}.get(spec.value or "", "Media Channel")
     return spec.name or "Channel"
 
 
@@ -2019,8 +2064,8 @@ def compose_channels(req: ComposeRequest):
     configured category order (channel_order config key), starting from req.start.
     Empty categories consume no numbers; input order within a category is preserved.
     """
-    movies, shows = _load_library()
-    if not movies and not shows:
+    movies, shows, other_media = _load_library()
+    if not movies and not shows and not other_media:
         raise HTTPException(404, "Run Export first — plex_library.csv not found")
 
     # Resolve + bucket by category, preserving input order within each.
@@ -2051,10 +2096,10 @@ def compose_channels(req: ComposeRequest):
                 shuffle = spec.shuffle if spec.shuffle in ("ordered", "shuffle", "block") else "ordered"
             else:
                 # Cache miss: static fallback (plain titles, not live).
-                content = _resolve_spec(spec, movies, shows)
+                content = _resolve_spec(spec, movies, shows, other_media)
                 shuffle = spec.shuffle if spec.shuffle in ("ordered", "shuffle", "block") else default_shuffle
         else:
-            content = _resolve_spec(spec, movies, shows)
+            content = _resolve_spec(spec, movies, shows, other_media)
             shuffle = spec.shuffle if spec.shuffle in ("ordered", "shuffle", "block") else default_shuffle
 
         if not content:
@@ -2519,9 +2564,9 @@ async def run_surgical_deploy():
                 library_index = await asyncio.to_thread(
                     channel_engine.build_library_index, tunarr_url
                 )
-                movie_map_shared, show_map_shared = library_index
+                movie_map_shared, show_map_shared, extra_maps_shared = library_index
             else:
-                movie_map_shared, show_map_shared = {}, {}
+                movie_map_shared, show_map_shared, extra_maps_shared = {}, {}, {}
 
             franchise_index_shared = channel_engine.load_franchise_index(DATA_DIR)
 
@@ -2537,6 +2582,7 @@ async def run_surgical_deploy():
                 yield _emit(f"  Updating #{num} {name} in place…")
 
                 def _do_update(ch=desired_ch, n=num, mv=movie_map_shared, sh=show_map_shared,
+                               ex=extra_maps_shared,
                                fi=franchise_index_shared):
                     plex_sections, collection_cache = [], {}
                     if any(isinstance(it, dict) and "collection" in it for it in ch.get("content", [])):
@@ -2547,6 +2593,7 @@ async def run_surgical_deploy():
                         plex_url=plex_url, plex_token=plex_token,
                         plex_sections=plex_sections, collection_cache=collection_cache,
                         franchise_index=fi,
+                        extra_maps=ex,
                     )
                     if not resolved:
                         raise channel_engine.ChannelEngineError(

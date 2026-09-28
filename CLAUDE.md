@@ -160,7 +160,7 @@ Each script's role and the gotcha worth knowing. Flags and exact behavior live i
 and the code — don't restate them here.
 
 - **`programmarr.py`** — CLI entry point. Flat menu (AI / No-AI / Collections / images / sync / quit). Walks first-run config setup, **always probes before deploying**, and pre-deploy asks whether to wipe-and-rebuild or preserve channels below a number (so manual/lower channels and their custom images survive). Accepts JSONL or bare-array LLM output and normalizes to the internal `{"channels":[...]}` dict.
-- **`export.py`** — pulls full metadata from the Plex API. Includes **studio** + top-3 billed **actors** plus **Country / Mood / Style** tags (all from the `/all` response, via `_join_tags`) which power the Planner's entity/country/mood/style channels. Auto-detects all movie+TV sections (or scope with `--movie-sections`/`--tv-sections`); cross-references Tunarr to flag unsynced content. Output: `plex_library.csv` + `export_summary.json`.
+- **`export.py`** — pulls full metadata from the Plex API and supplements it with selected Tunarr libraries. Includes **studio** + top-3 billed **actors** plus **Country / Mood / Style** tags (all from the Plex `/all` response, via `_join_tags`) and exports Tunarr Music / Music Video / Other Video terminal programs with Artist / Album metadata (including TunarrTube Local Media libraries). The CSV `Reference` column is the deployable lookup key; music references use `Artist — Title` to disambiguate same-named tracks/videos. Auto-detects all movie+TV sections (or scope with `--movie-sections`/`--tv-sections`); cross-references Tunarr to flag unsynced content. Output: `plex_library.csv` + `export_summary.json`.
 - **`generate_no_ai.py`** — builds a starter `channels.json` from CSV metadata (decade + genre movie channels, 50+ episode TV marathons; placeholders for franchise/specialty). Numbers channels sequentially using `channel_blocks.assign_numbers` + `channel_blocks.resolve_order`; `--order KEY,KEY,…` overrides category order; `--start N` sets the first number.
 - **`channel_blocks.py`** — shared, **pure, importable** channel-numbering logic (no `config.json`/argv). `assign_numbers(order, counts, start)` packs categories tight sequentially; `resolve_order(configured)` validates/fills the configured order against `CANONICAL_ORDER`. Single source of truth for compose, the LLM prompt, and `generate_no_ai`. **Must stay in the Dockerfile `COPY` line.**
 - **`generate_from_collections.py`** — one channel per Plex collection via `{"collection":"Name"}`. Manages the collection block (default ch 80+): keeps everything below `--base`, regenerates from `--base` up. Re-run any time Kometa changes collections.
@@ -231,14 +231,15 @@ call `channel_blocks.resolve_order` + `channel_blocks.assign_numbers` — single
 
 **shuffle values:** `ordered` | `shuffle` | `block`
 
-Content items can be plain title strings **or** Plex collection references
+Content items can be plain title strings, typed media refs, **or** Plex collection references
 (`{"collection": "Name"}`), freely mixed. Collection refs are expanded to member titles at
-deploy time via the Plex API; a not-found collection is warned and skipped. Plain titles must
-match Plex names exactly (case-insensitive). A title may appear on multiple channels —
-intentional. A title that exists as **both a movie and a show** resolves to whichever has
-more playable programs (a series beats a lone film) — pin it with a typed ref
-`{"movie": "Title"}` / `{"show": "Title"}` (editor syntax `{movie: Title}`). `/pipeline/compose`
-emits typed refs automatically for exactly those colliding titles (#39). Live channels add one more content-ref type (`{"match": "title_contains", …}`),
+deploy time via the Plex API; a not-found collection is warned and skipped. Plain titles match
+Tunarr titles exactly (case-insensitive). Supported typed refs are `movie`, `show`, `music`
+(Tunarr `track`), `music_video`, and `other_video`; they disambiguate a title shared across media
+types. Without a typed ref the copy with the most playable programs wins (a series beats a lone
+terminal item). The Channels editor uses `{music_video: Title}` shorthand and serializes it to
+`{"music_video": "Title"}`. `/pipeline/compose` emits movie/show refs automatically for those
+colliding titles (#39). Live channels add one more content-ref type (`{"match": "title_contains", …}`),
 documented under Live Channels.
 
 **Write-only-on-deploy invariant.** `channels.json` is the record of **deployed channels**
